@@ -1,0 +1,216 @@
+-- NOTES
+-- 1. Use data from OpenFDA (fda_food.food_enforcement) from BigQuery public data (but also available in JSON format here: https://open.fda.gov/data/downloads/)
+-- 2. Complete database has 27,138 records from 2012 to the present (updated March 2025).
+-- 3. The field "state" is the location of recalling firm and "distribution_pattern" is the state(s) included in initial distribution, or note that it's a nationwide recall. What story do these tell about Vermont?
+
+
+-- FINAL QUERY - Combines various queries below which are left in to show though process and important results.
+-- Need to join the two tables created above--one that shows VT product recalls, and the other that shows firms.
+-- Use pr and fr as aliases. 
+
+WITH ProductRecalls AS (
+  SELECT
+    EXTRACT(YEAR FROM report_date) AS report_year,
+    COUNT(*) AS us_product_recalls,
+    COUNT(CASE WHEN state = "VT" THEN 1 END) AS vt_product_recalls,
+    ROUND(SAFE_DIVIDE(COUNT(CASE WHEN state = "VT" THEN 1 END), COUNT(*)) * 100,1) AS per_vt_product_recalls
+  FROM
+    `bigquery-public-data.fda_food.food_enforcement`
+  WHERE
+    classification = "Class I"
+  GROUP BY
+    report_year
+),
+FirmRecalls AS (
+  SELECT
+    EXTRACT(YEAR FROM report_date) AS report_year,
+    COUNT(DISTINCT recalling_firm) AS us_firms,
+    COUNT(DISTINCT IF(state = "VT", recalling_firm, NULL)) AS vt_firms,
+    ROUND(SAFE_DIVIDE(COUNT(DISTINCT IF(state = "VT", recalling_firm, NULL)), COUNT(DISTINCT recalling_firm)) * 100, 1) AS per_vt_firms
+  FROM
+    `bigquery-public-data.fda_food.food_enforcement`
+  WHERE
+    classification = "Class I"
+  GROUP BY
+    report_year
+)
+SELECT
+  pr.report_year,
+  pr.us_product_recalls,
+  pr.vt_product_recalls,
+  pr.per_vt_product_recalls,
+  fr.us_firms,
+  fr.vt_firms,
+  fr.per_vt_firms
+FROM
+  ProductRecalls pr
+JOIN
+  FirmRecalls fr ON pr.report_year = fr.report_year
+ORDER BY
+  pr.report_year;
+
+
+-- ORIGINAL QUERY to understand frequency of Class I (Dangerous or defective products that predictably could cause serious health problems or death) recalls related to firms in Vermont only (using field "state").
+SELECT
+  *
+FROM
+  `bigquery-public-data.fda_food.food_enforcement`
+WHERE
+  classification = "Class I"
+  AND state = "VT";
+
+
+-- Now let's break these down by year, which requires extracting year from "report_year" (in YYYY-MM-DD format)
+SELECT
+  EXTRACT(YEAR
+  FROM
+    report_date) AS report_year,
+  COUNT(*) AS num_vt_recalls
+FROM
+  `bigquery-public-data.fda_food.food_enforcement`
+WHERE
+  classification = "Class I"
+  AND state = "VT"
+GROUP BY
+  report_year
+ORDER BY
+  report_year; 
+-- RESULT: This is an *extremely* sharp increase in Class I recalls in 2022 AND 2023. From 2013-2021 there were between 1-3 recalls, then 14 in 2022 and 59 in 2023! Is this unique to VT? Though the dataset is updated regularly, VT firms don't have any 2024 or 2025 recalls...
+
+
+-- Similar query as above, but with total recalls side by side with VT recalls (again, firms in VT that had recalls)
+-- Also, calculate percentage of recalls of products from VT firms (and round for easier reading)
+SELECT
+    EXTRACT(YEAR FROM report_date) AS report_year,
+    COUNT(*) AS num_us_product_recalls,
+    COUNT(CASE WHEN state = "VT" THEN 1 END) AS num_vt_product_recalls,
+    ROUND(SAFE_DIVIDE(COUNT(CASE WHEN state = "VT" THEN 1 END), COUNT(*)) * 100,1) AS per_vt_product_recalls
+FROM
+    `bigquery-public-data.fda_food.food_enforcement`
+WHERE
+    classification = "Class I"
+GROUP BY
+    report_year
+ORDER BY
+    report_year;
+
+
+-- "reason_for_recall" is text that could have keywords extracted, but I would do that in R, not SQL
+-- "recalling_firm" could help explain the spike in 2022-2023 in VT
+SELECT
+    recalling_firm,
+    COUNT(*) AS number_of_product_recalls
+FROM
+    `bigquery-public-data.fda_food.food_enforcement`
+WHERE
+    classification = "Class I"
+    AND EXTRACT(YEAR FROM report_date) IN (2022, 2023)
+    AND state = "VT"
+GROUP BY
+    recalling_firm
+ORDER BY
+    recalling_firm;
+-- RESULT: Apparently 2022 and 2023 were not great years for ice cream! 14 recalls for Kingdom Creamery in 2022 and 59 for Wilcox in 2023.
+
+
+-- Let's look at the "reason_for_recall" for Kingdom Creamery in 2022, since 14 separate recalls seems unlikely.
+SELECT
+    reason_for_recall, report_date, product_description
+FROM
+    `bigquery-public-data.fda_food.food_enforcement`
+WHERE
+    EXTRACT(YEAR FROM report_date) = 2022
+    AND recalling_firm = "Kingdom Creamery of Vermont LLC";
+
+-- Look at product_quantity to see volume of ice cream lost.
+SELECT
+    reason_for_recall,
+    report_date,
+    product_description,
+    product_quantity
+FROM
+    `bigquery-public-data.fda_food.food_enforcement`
+WHERE
+    EXTRACT(YEAR FROM report_date) = 2022
+    AND recalling_firm = "Kingdom Creamery of Vermont LLC";
+-- RESULT: Only aggregate is available. 1,623 cases lost across all product categories. 
+
+
+
+
+-- Filtering in this way shows all recalls were reported on 2022-08-24, and all were due to possible Listeria contamination. The difference shows up in "product_description" where we can see 14 different products were possible contaminated.
+-- Check WILCOX as well
+SELECT
+    reason_for_recall, report_date, product_description
+FROM
+    `bigquery-public-data.fda_food.food_enforcement`
+WHERE
+    EXTRACT(YEAR FROM report_date) = 2023
+    AND recalling_firm = "WILCOX ICE CREAM";
+-- RESULT: Again, all the same date (2023-12-20) and reason (Listeria)
+
+
+-- Look at number of firms
+SELECT
+    EXTRACT(YEAR FROM report_date) AS report_year,
+    COUNT(DISTINCT recalling_firm) AS us_firms,
+    COUNT(DISTINCT IF(state = "VT", recalling_firm, NULL)) AS vt_firms,
+    ROUND(SAFE_DIVIDE(COUNT(DISTINCT IF(state = "VT", recalling_firm, NULL)), COUNT(DISTINCT recalling_firm)) * 100, 2) AS per_vt_firms
+FROM
+    `bigquery-public-data.fda_food.food_enforcement`
+WHERE
+    classification = "Class I"
+GROUP BY
+    report_year
+ORDER BY
+    report_year;
+-- RESULT: for 2012-2025, VT firms range from 0 (0.0%) to 2 (1.1%). Not weighted by size of VT economy.
+
+
+-- In this dataset, state is the location of recalling firm and distribution_pattern is the state(s) included in initial distribution
+-- Vermont or VT have 537 records, when "nationwide" is added, total jumps to 1416
+SELECT
+  EXTRACT(YEAR FROM report_date) AS report_year,
+  COUNT(*) AS num_vt_recalls
+FROM
+  `bigquery-public-data.fda_food.food_enforcement`
+WHERE
+  classification = "Class I"
+  AND (distribution_pattern LIKE "%Vermont%" OR distribution_pattern LIKE "%VT%" OR distribution_pattern LIKE "%nationwide%")
+GROUP BY
+  report_year
+ORDER BY
+  report_year;
+
+
+
+
+-- NEXT STEPS
+-- It would be interesting to look at "intial_firm_notification"
+SELECT
+    initial_firm_notification,
+    COUNT(*) AS count
+FROM
+    `bigquery-public-data.fda_food.food_enforcement`
+GROUP BY
+    initial_firm_notification
+ORDER BY
+    count DESC;
+-- RESULT: This is actually a bit messy, with 10,377 notifications through mixed means, Other at 355, and 10 NAN.
+
+
+-- It might be important to check for duration of response, from "recall_initiation_date" to "termination_date" to see how quickly issues were resolved, perhaps by Class I, II, or III events.
+
+
+-- BigQuery has a COUNTIF function that is simpler (?) than COUNT(CASE WHEN...)
+SELECT
+    COUNTIF(classification IS NULL) AS null_count_classification,
+    COUNTIF(distribution_pattern IS NULL) AS null_count_distribution_pattern,
+    COUNTIF(recalling_firm IS NULL) AS null_count_recalling_firm,
+    COUNTIF(state IS NULL) AS null_count_state,
+    COUNTIF(reason_for_recall IS NULL) AS null_count_reason_for_recall,
+    COUNTIF(product_description IS NULL) AS null_count_product_description
+FROM
+    `bigquery-public-data.fda_food.food_enforcement`;
+
+
